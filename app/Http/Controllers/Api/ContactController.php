@@ -20,7 +20,7 @@ class ContactController extends Controller
         $validated['message'] = strip_tags($validated['message']);
 
         // Send the email to the business address
-        \Illuminate\Support\Facades\Mail::to('info@amaladvisory.com')->send(new \App\Mail\ContactMail($validated));
+        \Illuminate\Support\Facades\Mail::to('seth@amaladvisory.com')->send(new \App\Mail\ContactMail($validated));
 
         return response()->json([
             'success' => true,
