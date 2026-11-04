@@ -1,0 +1,96 @@
+name: Deploy Backend to Hostinger
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: backend_production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Test & Deploy Laravel API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, xml, ctype, iconv, mysql, bcmath, curl, zip, pdo, pdo_mysql, sqlite3
+          coverage: none
+
+      - name: Cache Composer Dependencies
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: |
+            composer-${{ runner.os }}-
+
+      - name: Install All Dependencies (for testing)
+        run: composer install --prefer-dist --no-interaction --optimize-autoloader
+
+      - name: Prepare Test Environment & Run Tests
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan test
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ':memory:'
+
+      - name: Install Production-Only Dependencies
+        run: composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
+
+      - name: Setup SSH Key & Known Hosts
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.HOSTINGER_SSH_PORT || '65002' }} -H "${{ secrets.HOSTINGER_SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Rsync Backend Code to Hostinger
+        run: |
+          rsync -avz -e "ssh -p ${{ secrets.HOSTINGER_SSH_PORT || '65002' }}" \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude 'tests' \
+            --exclude '.phpunit.cache' \
+            --exclude '.phpunit.result.cache' \
+            --exclude 'storage/logs/*.log' \
+            --exclude 'storage/framework/cache/*' \
+            --exclude 'storage/framework/sessions/*' \
+            --exclude 'storage/framework/views/*' \
+            ./ \
+            ${{ secrets.HOSTINGER_SSH_USER }}@${{ secrets.HOSTINGER_SSH_HOST }}:${{ secrets.HOSTINGER_BACKEND_PATH || 'domains/amaladvisory.com/public_html/api-backend' }}/
+
+      - name: Run Remote Post-Deploy Artisan Commands
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOSTINGER_SSH_HOST }}
+          username: ${{ secrets.HOSTINGER_SSH_USER }}
+          key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          port: ${{ secrets.HOSTINGER_SSH_PORT || 65002 }}
+          script: |
+            cd ${{ secrets.HOSTINGER_BACKEND_PATH || 'domains/amaladvisory.com/public_html/api-backend' }}
+            chmod -R 775 storage bootstrap/cache
+            
+            # Use Hostinger's PHP 8.3 CLI binary (default non-interactive shell uses 7.2)
+            PHP_BIN="/opt/alt/php83/usr/bin/php"
+            if [ ! -f "$PHP_BIN" ]; then
+              PHP_BIN="php"
+            fi
+
+            $PHP_BIN artisan migrate --force
+            $PHP_BIN artisan optimize:clear
+            $PHP_BIN artisan config:cache
+            $PHP_BIN artisan route:cache
+            $PHP_BIN artisan view:cache
