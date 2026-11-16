@@ -72,3 +72,4 @@ class ContactFormTest extends TestCase
                  ->assertJsonValidationErrors(['name', 'email', 'message']);
     }
 }
+
